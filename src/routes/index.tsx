@@ -19,6 +19,8 @@ import {
   type StreamState,
 } from "@/components/dashboard/data";
 import { cn } from "@/lib/utils";
+import { GuideBanner } from "@/components/dashboard/GuideBanner";
+import { InfoTip } from "@/components/dashboard/InfoTip";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -43,7 +45,7 @@ export const Route = createFileRoute("/")({
 const MAX_LOGS = 250;
 
 function Panel({ className, children }: { className?: string; children: React.ReactNode }) {
-  return <section className={cn("rounded-xl border border-border bg-card", className)}>{children}</section>;
+  return <section className={cn("glass rounded-2xl", className)}>{children}</section>;
 }
 
 function MetricCard({
@@ -53,6 +55,8 @@ function MetricCard({
   unit,
   paused,
   flash,
+  info,
+  accent = "primary",
 }: {
   icon: typeof Cpu;
   label: string;
@@ -60,16 +64,24 @@ function MetricCard({
   unit: string;
   paused: boolean;
   flash: boolean;
+  info: string;
+  accent?: "primary" | "memory";
 }) {
   return (
-    <Panel className={cn("p-5 transition-colors", flash && "border-primary/60")}>
+    <Panel className={cn("p-6 transition-[border-color,box-shadow] duration-500", flash && "border-primary/40")}>
       <div className="flex items-center justify-between text-xs text-muted-foreground">
         <span className="flex items-center gap-2">
-          <Icon className="size-4" /> {label}
+          <Icon className={cn("size-4", accent === "memory" ? "text-memory" : "text-primary/80")} /> {label}
+          <InfoTip title={label}>{info}</InfoTip>
         </span>
-        <span className={cn("size-1.5 rounded-full", paused ? "bg-warning" : "bg-primary animate-pulse")} />
+        <span
+          className={cn(
+            "size-1.5 rounded-full transition-colors duration-500",
+            paused ? "bg-warning" : accent === "memory" ? "bg-memory" : "bg-primary",
+          )}
+        />
       </div>
-      <p className="mt-4 font-mono text-4xl font-medium tabular-nums tracking-tight">
+      <p className={cn("mt-6 font-mono text-4xl font-medium tabular-nums tracking-tight transition-opacity duration-500", paused && "opacity-60")}>
         {value}
         <span className="ml-1.5 text-base text-muted-foreground">{unit}</span>
       </p>
@@ -215,17 +227,20 @@ function Index() {
   };
 
   return (
-    <main className="mx-auto min-h-screen max-w-6xl px-5 py-8 lg:py-12">
-      <header className="flex flex-wrap items-center gap-4 border-b border-border pb-6">
+    <main className="mx-auto min-h-screen max-w-4xl space-y-10 px-5 py-10 lg:py-16">
+      <GuideBanner />
+
+      <header className="flex flex-wrap items-center gap-4">
         <div className="mr-auto">
           <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">
             NeuroStream-X <span className="text-muted-foreground">// Local MLSys Telemetry</span>
           </h1>
           <p className="mt-1 font-mono text-xs text-muted-foreground">zero-copy mmap · pinned host ring · CUDA 12.4</p>
         </div>
+        <div className="flex items-center gap-3">
         <span
           className={cn(
-            "flex items-center gap-2 rounded-full border px-3 py-1.5 font-mono text-xs",
+            "flex items-center gap-2 rounded-full border px-3 py-1.5 font-mono text-xs transition-colors duration-500",
             active ? "border-primary/40 bg-primary/10 text-primary" : "border-warning/40 bg-warning/10 text-warning",
           )}
         >
@@ -236,7 +251,7 @@ function Index() {
           onClick={toggleStream}
           aria-pressed={active}
           className={cn(
-            "flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition-colors",
+            "flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition-colors duration-500",
             active
               ? "bg-primary text-primary-foreground hover:bg-primary/90"
               : "bg-warning text-warning-foreground hover:bg-warning/90",
@@ -245,31 +260,37 @@ function Index() {
           {active ? <Pause className="size-4" /> : <Play className="size-4" />}
           {active ? "Active (Streaming)" : "Paused"}
         </button>
+        </div>
       </header>
 
-      <div className="mt-8 flex items-center justify-between">
+      <section>
+      <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Core telemetry</h2>
         <button
           onClick={refresh}
           disabled={refreshing}
-          className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-1.5 text-sm hover:bg-accent disabled:opacity-60"
+          className="glass flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm transition-colors hover:bg-accent disabled:opacity-60"
         >
           <RefreshCw className={cn("size-4", refreshing && "animate-spin")} />
           {refreshing ? "Fetching…" : "Refresh Telemetry"}
         </button>
       </div>
-      <div className="mt-3 grid gap-4 md:grid-cols-3">
-        <MetricCard icon={Cpu} label="CPU-to-GPU Latency" value={metrics.latency.toFixed(2)} unit="ms" paused={!active} flash={flash} />
-        <MetricCard icon={Zap} label="Zero-Copy Mmap Bandwidth" value={metrics.bandwidth.toFixed(1)} unit="GB/s" paused={!active} flash={flash} />
-        <MetricCard icon={Database} label="Cache Hit Ratio" value={metrics.cacheHit.toFixed(1)} unit="%" paused={!active} flash={flash} />
+      <div className="mt-4 grid gap-4 md:grid-cols-3">
+        <MetricCard icon={Cpu} label="CPU-to-GPU Latency" value={metrics.latency.toFixed(2)} unit="ms" paused={!active} flash={flash}
+          info="How long one batch takes to travel from host memory to the GPU. Lower is better; bigger batches take longer per hop." />
+        <MetricCard icon={Zap} label="Mmap Bandwidth" value={metrics.bandwidth.toFixed(1)} unit="GB/s" paused={!active} flash={flash} accent="memory"
+          info="How much data per second is read straight from memory-mapped dataset files, without extra copies. It drops to zero while the stream is paused." />
+        <MetricCard icon={Database} label="Cache Hit Ratio" value={metrics.cacheHit.toFixed(1)} unit="%" paused={!active} flash={flash}
+          info="Share of requested data pages already sitting in RAM. A high ratio means the disk is rarely touched; a larger chunk window usually raises it." />
       </div>
+      </section>
 
-      <div className="mt-8 grid gap-4 lg:grid-cols-[2fr_3fr]">
-        <Panel className="flex flex-col p-5">
+      <div className="space-y-10">
+        <Panel className="flex flex-col p-6 sm:p-8">
           <h2 className="flex items-center gap-2 text-sm font-semibold">
             <Gauge className="size-4 text-muted-foreground" /> Local Fine-Tuning Controls
           </h2>
-          <div className="mt-5 space-y-6">
+          <div className="mt-6 space-y-8">
             {controls.map((spec) => (
               <ControlRow
                 key={spec.key}
@@ -279,7 +300,7 @@ function Index() {
               />
             ))}
           </div>
-          <div className="mt-auto flex items-center gap-3 pt-6">
+          <div className="flex items-center gap-3 pt-8">
             <button
               onClick={applyConfig}
               className="flex-1 rounded-lg bg-primary py-2.5 text-sm font-semibold text-primary-foreground hover:bg-primary/90"
@@ -299,8 +320,8 @@ function Index() {
           </p>
         </Panel>
 
-        <Panel className="flex min-h-[420px] flex-col overflow-hidden">
-          <div className="flex items-center justify-between border-b border-border px-4 py-3">
+        <Panel className="flex flex-col overflow-hidden">
+          <div className="flex items-center justify-between border-b border-border px-6 py-4">
             <h2 className="flex items-center gap-2 text-sm font-semibold">
               <Terminal className="size-4 text-muted-foreground" /> Live Kernel Log
               <span className="font-mono text-xs font-normal text-muted-foreground">{logs.length} lines</span>
@@ -312,7 +333,7 @@ function Index() {
               <Trash2 className="size-3.5" /> Clear Logs
             </button>
           </div>
-          <div ref={termRef} className="h-[400px] flex-1 overflow-y-auto bg-terminal p-4 font-mono text-xs leading-relaxed">
+          <div ref={termRef} className="h-[380px] overflow-y-auto bg-terminal/80 px-6 py-5 font-mono text-xs leading-relaxed">
             {logs.length === 0 ? (
               <p className="text-muted-foreground">
                 {active ? "waiting for kernel events…" : "stream paused — no new events"}
