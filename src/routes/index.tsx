@@ -133,7 +133,7 @@ function ControlRow({
         max={sliderMax}
         step={sliderStep}
         value={[sliderValue]}
-        onValueChange={([v]) => onChange(clampControl(spec, isLr ? 10 ** v : v))}
+        onValueChange={([v = sliderValue]) => onChange(clampControl(spec, isLr ? 10 ** v : v))}
       />
       <div className="mt-1.5 flex justify-between font-mono text-[11px] text-muted-foreground">
         <span>{isLr ? formatLr(spec.min) : spec.min}</span>
