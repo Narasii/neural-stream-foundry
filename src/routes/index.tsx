@@ -78,7 +78,7 @@ function MetricCard({
 }
 
 function formatLr(v: number) {
-  return v.toExponential(1).replace("e-", "e-");
+  return v.toExponential(1);
 }
 
 function ControlRow({
@@ -319,7 +319,7 @@ function Index() {
               </p>
             ) : (
               logs.map((l) => (
-                <p key={l.id} className="whitespace-pre-wrap break-all">
+                <p key={l.id} className="whitespace-pre-wrap break-words">
                   <span className="text-muted-foreground/70">{l.time} </span>
                   <span className={levelClass[l.level]}>[{l.level}]</span> <span className="text-foreground/90">{l.text}</span>
                 </p>
