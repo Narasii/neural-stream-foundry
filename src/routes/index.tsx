@@ -1,37 +1,37 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
+import { Cpu, Database, Gauge, Pause, Play, RefreshCw, Terminal, Trash2, Zap } from "lucide-react";
+import { Slider } from "@/components/ui/slider";
 import {
-  Bell,
-  KanbanSquare,
-  List,
-  MessageSquare,
-  MoreVertical,
-  Plus,
-  Search,
-  SlidersHorizontal,
-  Star,
-  Table2,
-  Waves,
-  X,
-} from "lucide-react";
-import { IconRail, ProjectSidebar } from "@/components/dashboard/Sidebar";
-import { Avatars, Board } from "@/components/dashboard/Board";
-import { Copilot } from "@/components/dashboard/Copilot";
-import { columns, initialJobs, tagClass, type ColumnId, type Job } from "@/components/dashboard/data";
+  clampControl,
+  controls,
+  defaultConfig,
+  initialLogs,
+  initialMetrics,
+  nextMetrics,
+  streamLog,
+  timestamp,
+  type ControlSpec,
+  type LogLine,
+  type Metrics,
+  type PipelineConfig,
+  type StreamState,
+} from "@/components/dashboard/data";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Stream Bench — NeuroStream-X Control" },
+      { title: "NeuroStream-X // Local MLSys Telemetry" },
       {
         name: "description",
-        content: "Track streaming jobs, bandwidth, memory and batch latency for the NeuroStream-X pipeline.",
+        content: "Live CPU-to-GPU latency, zero-copy mmap bandwidth, cache hit ratio and kernel logs for NeuroStream-X.",
       },
-      { property: "og:title", content: "Stream Bench — NeuroStream-X Control" },
+      { property: "og:title", content: "NeuroStream-X // Local MLSys Telemetry" },
       {
         property: "og:description",
-        content: "Track streaming jobs, bandwidth, memory and batch latency for the NeuroStream-X pipeline.",
+        content: "Live CPU-to-GPU latency, zero-copy mmap bandwidth, cache hit ratio and kernel logs for NeuroStream-X.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
@@ -40,174 +40,294 @@ export const Route = createFileRoute("/")({
   component: Index,
 });
 
-type View = "kanban" | "table" | "list";
+const MAX_LOGS = 250;
 
-const views: { id: View; label: string; icon: typeof List }[] = [
-  { id: "kanban", label: "Kanban", icon: KanbanSquare },
-  { id: "table", label: "Table", icon: Table2 },
-  { id: "list", label: "List", icon: List },
-];
-
-function stageName(id: ColumnId) {
-  return columns.find((c) => c.id === id)?.title ?? id;
+function Panel({ className, children }: { className?: string; children: React.ReactNode }) {
+  return <section className={cn("rounded-xl border border-border bg-card", className)}>{children}</section>;
 }
 
-function TableView({ jobs }: { jobs: Job[] }) {
+function MetricCard({
+  icon: Icon,
+  label,
+  value,
+  unit,
+  paused,
+  flash,
+}: {
+  icon: typeof Cpu;
+  label: string;
+  value: string;
+  unit: string;
+  paused: boolean;
+  flash: boolean;
+}) {
   return (
-    <div className="overflow-hidden rounded-2xl bg-column">
-      <table className="w-full text-sm">
-        <thead className="text-left text-xs uppercase tracking-wider text-muted-foreground">
-          <tr>
-            <th className="px-4 py-3 font-medium">Job</th>
-            <th className="px-4 py-3 font-medium">Stage</th>
-            <th className="px-4 py-3 font-medium">Bandwidth</th>
-            <th className="px-4 py-3 font-medium">Memory</th>
-            <th className="px-4 py-3 font-medium">Latency</th>
-            <th className="px-4 py-3 font-medium">Owners</th>
-          </tr>
-        </thead>
-        <tbody>
-          {jobs.map((j) => (
-            <tr key={j.id} className="border-t border-border">
-              <td className="px-4 py-3">
-                <span className="flex items-center gap-2.5">
-                  <span className={cn("size-2 rounded-full", tagClass[j.tag])} />
-                  {j.title}
-                </span>
-              </td>
-              <td className="px-4 py-3 text-muted-foreground">{stageName(j.column)}</td>
-              <td className="px-4 py-3 font-mono text-xs">{j.bandwidth != null ? `${j.bandwidth} GB/s` : "—"}</td>
-              <td className="px-4 py-3 font-mono text-xs">{j.memory != null ? `${j.memory}%` : "—"}</td>
-              <td className="px-4 py-3 font-mono text-xs">{j.latency != null ? `${j.latency} ms` : "—"}</td>
-              <td className="px-4 py-3">
-                <Avatars owners={j.owners} />
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <Panel className={cn("p-5 transition-colors", flash && "border-primary/60")}>
+      <div className="flex items-center justify-between text-xs text-muted-foreground">
+        <span className="flex items-center gap-2">
+          <Icon className="size-4" /> {label}
+        </span>
+        <span className={cn("size-1.5 rounded-full", paused ? "bg-warning" : "bg-primary animate-pulse")} />
+      </div>
+      <p className="mt-4 font-mono text-4xl font-medium tabular-nums tracking-tight">
+        {value}
+        <span className="ml-1.5 text-base text-muted-foreground">{unit}</span>
+      </p>
+    </Panel>
   );
 }
 
-function ListView({ jobs }: { jobs: Job[] }) {
+function formatLr(v: number) {
+  return v.toExponential(1).replace("e-", "e-");
+}
+
+function ControlRow({
+  spec,
+  value,
+  onChange,
+}: {
+  spec: ControlSpec;
+  value: number;
+  onChange: (v: number) => void;
+}) {
+  const isLr = spec.key === "learningRate";
+  const [draft, setDraft] = useState(String(value));
+  useEffect(() => setDraft(String(value)), [value]);
+
+  // Learning rate spans three decades, so its slider runs on log10.
+  const sliderMin = isLr ? Math.log10(spec.min) : spec.min;
+  const sliderMax = isLr ? Math.log10(spec.max) : spec.max;
+  const sliderStep = isLr ? 0.01 : spec.step;
+  const sliderValue = isLr ? Math.log10(value) : value;
+
+  const commit = () => {
+    const next = clampControl(spec, Number(draft));
+    onChange(next);
+    setDraft(String(next));
+  };
+
   return (
-    <div className="space-y-6">
-      {columns.map((c) => (
-        <div key={c.id}>
-          <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">{c.title}</h2>
-          <ul className="divide-y divide-border rounded-2xl bg-column">
-            {jobs
-              .filter((j) => j.column === c.id)
-              .map((j) => (
-                <li key={j.id} className="flex items-center gap-3 px-4 py-3 text-sm">
-                  <span className={cn("h-1 w-5 rounded-full", tagClass[j.tag])} />
-                  <span className="flex-1">{j.title}</span>
-                  <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                    <MessageSquare className="size-3.5" /> {j.comments}
-                  </span>
-                  <Avatars owners={j.owners} />
-                </li>
-              ))}
-          </ul>
+    <div>
+      <div className="flex items-center justify-between gap-3">
+        <label htmlFor={spec.key} className="text-sm font-medium">
+          {spec.label}
+        </label>
+        <div className="flex items-center gap-2">
+          <input
+            id={spec.key}
+            inputMode="decimal"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={commit}
+            onKeyDown={(e) => e.key === "Enter" && commit()}
+            className="w-24 rounded-md border border-input bg-background px-2 py-1 text-right font-mono text-sm tabular-nums outline-none focus:border-primary"
+          />
+          {spec.unit && <span className="w-14 font-mono text-xs text-muted-foreground">{spec.unit}</span>}
+          {!spec.unit && <span className="w-14 font-mono text-xs text-muted-foreground">{formatLr(value)}</span>}
         </div>
-      ))}
+      </div>
+      <Slider
+        className="mt-3"
+        aria-label={spec.label}
+        min={sliderMin}
+        max={sliderMax}
+        step={sliderStep}
+        value={[sliderValue]}
+        onValueChange={([v]) => onChange(clampControl(spec, isLr ? 10 ** v : v))}
+      />
+      <div className="mt-1.5 flex justify-between font-mono text-[11px] text-muted-foreground">
+        <span>{isLr ? formatLr(spec.min) : spec.min}</span>
+        <span>{isLr ? formatLr(spec.max) : spec.max}</span>
+      </div>
     </div>
   );
 }
+
+const levelClass = { INFO: "text-primary", DEBUG: "text-muted-foreground", WARN: "text-warning" } as const;
 
 function Index() {
-  const [jobs, setJobs] = useState<Job[]>(initialJobs);
-  const [view, setView] = useState<View>("kanban");
-  const [starred, setStarred] = useState(true);
-  const [copilot, setCopilot] = useState(true);
-  const [query, setQuery] = useState("");
+  const [state, setState] = useState<StreamState>("active");
+  const [metrics, setMetrics] = useState<Metrics>(initialMetrics);
+  const [refreshing, setRefreshing] = useState(false);
+  const [flash, setFlash] = useState(false);
+  const [draft, setDraft] = useState<PipelineConfig>(defaultConfig);
+  const [applied, setApplied] = useState<PipelineConfig>(defaultConfig);
+  const [logs, setLogs] = useState<LogLine[]>(() => initialLogs.map((l, i) => ({ ...l, id: i })));
+  const nextId = useRef(initialLogs.length);
+  const batch = useRef(143);
+  const termRef = useRef<HTMLDivElement>(null);
+  const metricsRef = useRef(metrics);
+  metricsRef.current = metrics;
 
-  const visible = jobs.filter((j) => j.title.toLowerCase().includes(query.toLowerCase()));
+  const active = state === "active";
+  const dirty = (Object.keys(draft) as (keyof PipelineConfig)[]).some((k) => draft[k] !== applied[k]);
 
-  const move = (id: string, column: ColumnId) =>
-    setJobs((js) => js.map((j) => (j.id === id ? { ...j, column } : j)));
-  const add = (column: ColumnId, title: string) =>
-    setJobs((js) => [
-      ...js,
-      { id: crypto.randomUUID(), title, column, tag: "blue", comments: 0, owners: ["NS"] },
-    ]);
+  const log = (level: LogLine["level"], text: string) =>
+    setLogs((ls) => [...ls, { id: nextId.current++, time: timestamp(), level, text }].slice(-MAX_LOGS));
+
+  // Live metrics tick.
+  useEffect(() => {
+    const t = setInterval(() => setMetrics((m) => nextMetrics(m, applied, state)), 1000);
+    return () => clearInterval(t);
+  }, [applied, state]);
+
+  // Kernel log stream, only while active.
+  useEffect(() => {
+    if (!active) return;
+    const t = setInterval(() => {
+      const { level, text } = streamLog(batch.current++, metricsRef.current);
+      log(level, text);
+    }, 1100);
+    return () => clearInterval(t);
+  }, [active]);
+
+  useEffect(() => {
+    const el = termRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [logs]);
+
+  const toggleStream = () => {
+    const next = active ? "paused" : "active";
+    setState(next);
+    setMetrics((m) => nextMetrics(m, applied, next));
+    log(next === "active" ? "INFO" : "WARN", next === "active" ? "stream resumed — prefetch workers restarted" : "stream paused — mmap readers idle, buffers retained");
+  };
+
+  const refresh = () => {
+    setRefreshing(true);
+    log("DEBUG", "polling /proc/meminfo and nvml counters…");
+    setTimeout(() => {
+      setMetrics((m) => nextMetrics(m, applied, state));
+      setRefreshing(false);
+      setFlash(true);
+      setTimeout(() => setFlash(false), 600);
+      log("INFO", "telemetry snapshot refreshed");
+    }, 900);
+  };
+
+  const applyConfig = () => {
+    setApplied(draft);
+    log(
+      "INFO",
+      `pipeline config compiled: batch=${draft.batchSize} window=${draft.chunkWindow}MiB lr=${formatLr(draft.learningRate)}`,
+    );
+    toast.success("Configuration compiled to local buffer successfully");
+  };
 
   return (
-    <main className="min-h-screen p-6 lg:p-10">
-      <div className="relative mx-auto flex h-[calc(100vh-5rem)] min-h-[720px] max-w-[1600px] gap-2 overflow-hidden rounded-3xl bg-shell p-2 shadow-2xl">
-        <IconRail />
-        <ProjectSidebar />
-
-        <section className="flex min-w-0 flex-1 flex-col px-6 pt-5">
-          <header className="flex items-center gap-4">
-            <div className="grid size-11 place-items-center rounded-xl bg-column text-primary">
-              <Waves className="size-5" />
-            </div>
-            <h1 className="text-2xl font-semibold tracking-tight">Stream Bench</h1>
-            <button onClick={() => setStarred((s) => !s)} aria-label="Star pipeline">
-              <Star className={cn("size-4", starred ? "fill-tag-yellow text-tag-yellow" : "text-muted-foreground")} />
-            </button>
-            <div className="ml-auto flex items-center gap-4">
-              <div className="flex items-center">
-                <span className="grid size-7 place-items-center rounded-full bg-primary text-primary-foreground">
-                  <Plus className="size-4" />
-                </span>
-                <div className="-ml-1">
-                  <Avatars owners={["NS", "AK", "RV"]} />
-                </div>
-              </div>
-              <Bell className="size-4 text-muted-foreground" />
-              <label className="flex items-center gap-2 rounded-lg bg-column px-2.5 py-1.5 text-sm">
-                <Search className="size-4 text-muted-foreground" />
-                <input
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Filter jobs"
-                  className="w-28 bg-transparent outline-none placeholder:text-muted-foreground"
-                />
-              </label>
-              <MoreVertical className="size-4 text-muted-foreground" />
-            </div>
-          </header>
-
-          <nav className="mt-6 flex items-center gap-1 border-b border-border">
-            {views.map(({ id, label, icon: Icon }) => (
-              <button
-                key={id}
-                onClick={() => setView(id)}
-                className={cn(
-                  "-mb-px flex items-center gap-2 border-b-2 px-3 pb-3 text-sm transition-colors",
-                  view === id
-                    ? "border-primary text-foreground"
-                    : "border-transparent text-muted-foreground hover:text-foreground",
-                )}
-              >
-                <Icon className="size-4" /> {label}
-              </button>
-            ))}
-            <span className="ml-auto flex items-center gap-2 pb-3 text-sm text-muted-foreground">
-              <SlidersHorizontal className="size-4" /> Filter
-            </span>
-          </nav>
-
-          <div className="min-h-0 flex-1 overflow-auto py-5 pr-2">
-            {view === "kanban" && <Board jobs={visible} onMove={move} onAdd={add} />}
-            {view === "table" && <TableView jobs={visible} />}
-            {view === "list" && <ListView jobs={visible} />}
-          </div>
-        </section>
-
-        <div className="absolute bottom-5 right-5 flex flex-col items-end gap-3">
-          {copilot && <Copilot onClose={() => setCopilot(false)} />}
-          <button
-            onClick={() => setCopilot((c) => !c)}
-            aria-label={copilot ? "Hide assistant" : "Show assistant"}
-            className="grid size-11 place-items-center rounded-full bg-popover text-foreground shadow-lg ring-1 ring-border hover:bg-accent"
-          >
-            {copilot ? <X className="size-4" /> : <Waves className="size-4 text-primary" />}
-          </button>
+    <main className="mx-auto min-h-screen max-w-6xl px-5 py-8 lg:py-12">
+      <header className="flex flex-wrap items-center gap-4 border-b border-border pb-6">
+        <div className="mr-auto">
+          <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">
+            NeuroStream-X <span className="text-muted-foreground">// Local MLSys Telemetry</span>
+          </h1>
+          <p className="mt-1 font-mono text-xs text-muted-foreground">zero-copy mmap · pinned host ring · CUDA 12.4</p>
         </div>
+        <span
+          className={cn(
+            "flex items-center gap-2 rounded-full border px-3 py-1.5 font-mono text-xs",
+            active ? "border-primary/40 bg-primary/10 text-primary" : "border-warning/40 bg-warning/10 text-warning",
+          )}
+        >
+          <span className={cn("size-2 rounded-full", active ? "bg-primary animate-pulse" : "bg-warning")} />
+          Workstation-01 [{active ? "Active" : "Paused"}]
+        </span>
+        <button
+          onClick={toggleStream}
+          aria-pressed={active}
+          className={cn(
+            "flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition-colors",
+            active
+              ? "bg-primary text-primary-foreground hover:bg-primary/90"
+              : "bg-warning text-warning-foreground hover:bg-warning/90",
+          )}
+        >
+          {active ? <Pause className="size-4" /> : <Play className="size-4" />}
+          {active ? "Active (Streaming)" : "Paused"}
+        </button>
+      </header>
+
+      <div className="mt-8 flex items-center justify-between">
+        <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Core telemetry</h2>
+        <button
+          onClick={refresh}
+          disabled={refreshing}
+          className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-1.5 text-sm hover:bg-accent disabled:opacity-60"
+        >
+          <RefreshCw className={cn("size-4", refreshing && "animate-spin")} />
+          {refreshing ? "Fetching…" : "Refresh Telemetry"}
+        </button>
+      </div>
+      <div className="mt-3 grid gap-4 md:grid-cols-3">
+        <MetricCard icon={Cpu} label="CPU-to-GPU Latency" value={metrics.latency.toFixed(2)} unit="ms" paused={!active} flash={flash} />
+        <MetricCard icon={Zap} label="Zero-Copy Mmap Bandwidth" value={metrics.bandwidth.toFixed(1)} unit="GB/s" paused={!active} flash={flash} />
+        <MetricCard icon={Database} label="Cache Hit Ratio" value={metrics.cacheHit.toFixed(1)} unit="%" paused={!active} flash={flash} />
+      </div>
+
+      <div className="mt-8 grid gap-4 lg:grid-cols-[2fr_3fr]">
+        <Panel className="flex flex-col p-5">
+          <h2 className="flex items-center gap-2 text-sm font-semibold">
+            <Gauge className="size-4 text-muted-foreground" /> Local Fine-Tuning Controls
+          </h2>
+          <div className="mt-5 space-y-6">
+            {controls.map((spec) => (
+              <ControlRow
+                key={spec.key}
+                spec={spec}
+                value={draft[spec.key]}
+                onChange={(v) => setDraft((d) => ({ ...d, [spec.key]: v }))}
+              />
+            ))}
+          </div>
+          <div className="mt-auto flex items-center gap-3 pt-6">
+            <button
+              onClick={applyConfig}
+              className="flex-1 rounded-lg bg-primary py-2.5 text-sm font-semibold text-primary-foreground hover:bg-primary/90"
+            >
+              Apply Pipeline Config
+            </button>
+            <button
+              onClick={() => setDraft(applied)}
+              disabled={!dirty}
+              className="rounded-lg border border-border px-3 py-2.5 text-sm text-muted-foreground hover:text-foreground disabled:opacity-40"
+            >
+              Revert
+            </button>
+          </div>
+          <p className="mt-2 font-mono text-[11px] text-muted-foreground">
+            {dirty ? "● unapplied changes" : "✓ in sync with local buffer"}
+          </p>
+        </Panel>
+
+        <Panel className="flex min-h-[420px] flex-col overflow-hidden">
+          <div className="flex items-center justify-between border-b border-border px-4 py-3">
+            <h2 className="flex items-center gap-2 text-sm font-semibold">
+              <Terminal className="size-4 text-muted-foreground" /> Live Kernel Log
+              <span className="font-mono text-xs font-normal text-muted-foreground">{logs.length} lines</span>
+            </h2>
+            <button
+              onClick={() => setLogs([])}
+              className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+            >
+              <Trash2 className="size-3.5" /> Clear Logs
+            </button>
+          </div>
+          <div ref={termRef} className="h-[400px] flex-1 overflow-y-auto bg-terminal p-4 font-mono text-xs leading-relaxed">
+            {logs.length === 0 ? (
+              <p className="text-muted-foreground">
+                {active ? "waiting for kernel events…" : "stream paused — no new events"}
+              </p>
+            ) : (
+              logs.map((l) => (
+                <p key={l.id} className="whitespace-pre-wrap break-all">
+                  <span className="text-muted-foreground/70">{l.time} </span>
+                  <span className={levelClass[l.level]}>[{l.level}]</span> <span className="text-foreground/90">{l.text}</span>
+                </p>
+              ))
+            )}
+            {active && <span className="inline-block h-3.5 w-2 animate-pulse bg-primary align-middle" />}
+          </div>
+        </Panel>
       </div>
     </main>
   );
