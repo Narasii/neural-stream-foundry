@@ -8,3 +8,6 @@
 > Commits you push to the connected branch sync back to Lovable and show up in
 > the editor, so keep the branch in a working state.
 <!-- LOVABLE:END -->
+
+## Project rules
+- The NeuroStream-X control dashboard lives at `/`, built from components in `src/components/dashboard/` with mock data in `data.ts` — keeps the UI separate from any future live telemetry source.
