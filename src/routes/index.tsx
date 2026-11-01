@@ -237,6 +237,7 @@ function Index() {
           </h1>
           <p className="mt-1 font-mono text-xs text-muted-foreground">zero-copy mmap · pinned host ring · CUDA 12.4</p>
         </div>
+        <div className="flex items-center gap-3">
         <span
           className={cn(
             "flex items-center gap-2 rounded-full border px-3 py-1.5 font-mono text-xs transition-colors duration-500",
@@ -259,6 +260,7 @@ function Index() {
           {active ? <Pause className="size-4" /> : <Play className="size-4" />}
           {active ? "Active (Streaming)" : "Paused"}
         </button>
+        </div>
       </header>
 
       <section>
