@@ -1,141 +1,103 @@
-export type Tag = "green" | "red" | "yellow" | "blue" | "violet";
-export type ColumnId = "queued" | "streaming" | "completed";
+export type StreamState = "active" | "paused";
 
-export interface Job {
-  id: string;
-  title: string;
-  description?: string;
-  tag: Tag;
-  column: ColumnId;
-  comments: number;
-  attachments?: number;
-  owners: string[];
-  /** Optional telemetry preview: bandwidth samples in GB/s */
-  spark?: number[];
-  bandwidth?: number;
-  memory?: number;
-  latency?: number;
+export interface Metrics {
+  /** CPU-to-GPU batch latency, ms */
+  latency: number;
+  /** Zero-copy mmap read bandwidth, GB/s */
+  bandwidth: number;
+  /** Page-cache hit ratio, % */
+  cacheHit: number;
 }
 
-export const columns: { id: ColumnId; title: string }[] = [
-  { id: "queued", title: "Queued" },
-  { id: "streaming", title: "Streaming" },
-  { id: "completed", title: "Completed" },
+export interface PipelineConfig {
+  batchSize: number;
+  /** Mmap chunk window, MB */
+  chunkWindow: number;
+  learningRate: number;
+}
+
+export interface ControlSpec {
+  key: keyof PipelineConfig;
+  label: string;
+  unit: string;
+  min: number;
+  max: number;
+  step: number;
+}
+
+export const controls: ControlSpec[] = [
+  { key: "batchSize", label: "Batch Size", unit: "samples", min: 8, max: 1024, step: 8 },
+  { key: "chunkWindow", label: "Mmap Chunk Window", unit: "MB", min: 4, max: 256, step: 4 },
+  { key: "learningRate", label: "Learning Rate", unit: "", min: 0.00001, max: 0.01, step: 0.00001 },
 ];
 
-export const tagClass: Record<Tag, string> = {
-  green: "bg-tag-green",
-  red: "bg-tag-red",
-  yellow: "bg-tag-yellow",
-  blue: "bg-tag-blue",
-  violet: "bg-tag-violet",
-};
+export const defaultConfig: PipelineConfig = { batchSize: 128, chunkWindow: 64, learningRate: 0.0003 };
 
-export const initialJobs: Job[] = [
-  { id: "j1", title: "Shard ImageNet-22k to mmap", tag: "green", column: "queued", comments: 3, owners: ["NS", "AK"] },
-  {
-    id: "j2",
-    title: "Prefetch window sweep",
-    tag: "red",
-    column: "queued",
-    comments: 1,
-    attachments: 1,
-    owners: ["NS"],
-    spark: [4, 6, 5, 8, 7, 9, 11, 10, 12, 11, 13, 12],
-  },
-  { id: "j3", title: "NUMA pinning on node-02", tag: "blue", column: "queued", comments: 2, owners: ["RV", "NS", "AK"] },
-  {
-    id: "j4",
-    title: "Page-fault profiling report",
-    description: "Trace major/minor faults across 8 workers and compare against the O_DIRECT baseline.",
-    tag: "violet",
-    column: "queued",
-    comments: 3,
-    attachments: 2,
-    owners: ["AK", "NS"],
-  },
-  { id: "j5", title: "Validate tokenizer shards", tag: "yellow", column: "queued", comments: 4, owners: ["RV"] },
+export const initialMetrics: Metrics = { latency: 0.42, bandwidth: 11.8, cacheHit: 94.2 };
 
-  { id: "j6", title: "LAION-400M ingest", tag: "red", column: "streaming", comments: 1, owners: ["NS", "AK"], bandwidth: 11.8, memory: 62, latency: 0.42 },
-  {
-    id: "j7",
-    title: "Ring-buffer backpressure test",
-    description: "Hold producer at 2× consumer rate and confirm the buffer never copies on the hot path.",
-    tag: "green",
-    column: "streaming",
-    comments: 2,
-    owners: ["RV"],
-    bandwidth: 7.3,
-    memory: 41,
-    latency: 0.88,
-  },
-  { id: "j8", title: "Huge-page TLB benchmark", tag: "yellow", column: "streaming", comments: 5, owners: ["NS", "AK", "RV"], bandwidth: 9.1, memory: 55, latency: 0.51 },
+/** Snap a value into a control's range and step. Non-numeric input falls back to the minimum. */
+export function clampControl(spec: ControlSpec, value: number): number {
+  if (!Number.isFinite(value)) return spec.min;
+  const bounded = Math.min(spec.max, Math.max(spec.min, value));
+  const snapped = Math.round(bounded / spec.step) * spec.step;
+  const decimals = (spec.step.toString().split(".")[1] ?? "").length;
+  return Number(Math.min(spec.max, snapped).toFixed(decimals));
+}
 
-  { id: "j9", title: "Baseline: PyTorch DataLoader", tag: "green", column: "completed", comments: 7, owners: ["NS", "AK", "RV"] },
-  { id: "j10", title: "Mmap index builder v2", tag: "yellow", column: "completed", comments: 2, attachments: 1, owners: ["AK", "NS"] },
-  { id: "j11", title: "Zero-copy collate kernel", tag: "red", column: "completed", comments: 2, owners: ["NS", "RV"] },
-  { id: "j12", title: "Telemetry exporter", tag: "blue", column: "completed", comments: 1, owners: ["AK"] },
-  {
-    id: "j13",
-    title: "Throughput regression audit",
-    description: "Bisect the 6% drop introduced after switching madvise hints to MADV_SEQUENTIAL.",
-    tag: "violet",
-    column: "completed",
-    comments: 4,
-    owners: ["NS"],
-  },
-  {
-    id: "j14",
-    title: "Weekly bandwidth snapshot",
-    tag: "red",
-    column: "completed",
-    comments: 1,
-    attachments: 1,
-    owners: ["RV"],
-    spark: [9, 10, 9, 11, 12, 12, 13, 12, 14, 13, 15, 14],
-  },
+/** Steady-state targets the live metrics drift around, derived from the applied config. */
+export function targetMetrics(config: PipelineConfig): Metrics {
+  const bandwidth = 6 + Math.log2(config.chunkWindow) * 1.0; // 64 MB -> 12 GB/s
+  const latency = 0.18 + config.batchSize / 530; // 128 -> ~0.42 ms
+  const cacheHit = Math.min(99.5, 88 + Math.log2(config.chunkWindow) * 1.05); // 64 MB -> ~94.3%
+  return { latency, bandwidth, cacheHit };
+}
+
+/** Next live sample. When paused, nothing is read from disk: bandwidth drops to 0 and the rest hold. */
+export function nextMetrics(prev: Metrics, config: PipelineConfig, state: StreamState, rand = Math.random): Metrics {
+  if (state === "paused") return { ...prev, bandwidth: 0 };
+  const t = targetMetrics(config);
+  const jitter = (spread: number) => (rand() - 0.5) * 2 * spread;
+  return {
+    latency: Math.max(0.05, t.latency + jitter(0.04)),
+    bandwidth: Math.max(0, t.bandwidth + jitter(0.6)),
+    cacheHit: Math.min(99.9, Math.max(0, t.cacheHit + jitter(0.5))),
+  };
+}
+
+export type LogLevel = "INFO" | "DEBUG" | "WARN";
+
+export interface LogLine {
+  id: number;
+  time: string;
+  level: LogLevel;
+  text: string;
+}
+
+export const initialLogs: Omit<LogLine, "id">[] = [
+  { time: "12:09:58.104", level: "INFO", text: "nsx-kernel 0.4.1 attached to Workstation-01 (2× NUMA, 1× NVMe RAID0)" },
+  { time: "12:09:58.311", level: "INFO", text: "mmap buffer allocated at 0x7fff3a2c0000 (64 MiB) — zero-copy bypass active" },
+  { time: "12:09:58.402", level: "DEBUG", text: "madvise(MADV_SEQUENTIAL) applied to shard_000..shard_127" },
+  { time: "12:09:59.017", level: "INFO", text: "pinned host ring registered with CUDA (cudaHostRegister ok)" },
+  { time: "12:09:59.640", level: "DEBUG", text: "Batch #140 ingested in 0.41 ms" },
+  { time: "12:10:00.052", level: "DEBUG", text: "Batch #141 ingested in 0.43 ms" },
+  { time: "12:10:00.488", level: "DEBUG", text: "Batch #142 ingested in 0.42 ms" },
 ];
 
-export const favorites = [
-  { label: "Bandwidth Monitor", icon: "gauge" },
-  { label: "Memory Map", icon: "cpu" },
-  { label: "Latency Traces", icon: "activity" },
-] as const;
+const hex = (rand: () => number) =>
+  Math.floor(rand() * 0xffffff)
+    .toString(16)
+    .padStart(6, "0");
 
-export const pipelines = [
-  { label: "Vision Pretrain", count: 6 },
-  { label: "LLM Tokenizer", count: 4 },
-  { label: "Stream Bench", count: 14, active: true },
-  { label: "Audio Shards", count: 3 },
-  { label: "Multi-GPU Sync", count: 9 },
-  { label: "CUDA Prefetch", count: 2 },
-];
+/** A realistic kernel log line for the given batch number and current sample. */
+export function streamLog(batch: number, m: Metrics, rand = Math.random): { level: LogLevel; text: string } {
+  const roll = rand();
+  if (roll < 0.12) return { level: "INFO", text: `mmap window remapped at 0x7fff${hex(rand)}0 — zero-copy bypass active` };
+  if (roll < 0.2) return { level: "DEBUG", text: `page cache hit ratio ${m.cacheHit.toFixed(1)}% over last 1k pages` };
+  if (roll < 0.25) return { level: "WARN", text: `minor fault burst on shard_${String(Math.floor(rand() * 128)).padStart(3, "0")} (${Math.floor(rand() * 40 + 8)} faults)` };
+  return { level: "DEBUG", text: `Batch #${batch} ingested in ${m.latency.toFixed(2)} ms @ ${m.bandwidth.toFixed(1)} GB/s` };
+}
 
-export const categories = [
-  { label: "Ingestion", tag: "red" as Tag },
-  { label: "Benchmarks", tag: "green" as Tag },
-  { label: "Profiling", tag: "blue" as Tag },
-];
-
-const replies: { match: RegExp; text: string }[] = [
-  {
-    match: /latenc|slow|p99/i,
-    text: "p99 batch latency on Stream Bench is 0.88 ms, driven by the backpressure test. Three things usually help:\n\n1. Widen the prefetch window to 4 batches so workers stay ahead of the GPU.\n2. Pin readers to the NUMA node that owns the shard file.\n3. Enable huge pages to cut TLB misses on large mmaps.",
-  },
-  {
-    match: /memory|ram|rss/i,
-    text: "Resident memory is at 55% of the budget across the three running jobs. Most of it is page cache from mmapped shards, which the kernel can reclaim. No job is copying batches on the hot path.",
-  },
-  {
-    match: /bandwidth|throughput|gb/i,
-    text: "Combined read bandwidth is 28.2 GB/s right now. LAION-400M ingest is the heaviest at 11.8 GB/s. There is headroom of roughly 6 GB/s before the NVMe array saturates.",
-  },
-];
-
-export function copilotReply(question: string): string {
-  const hit = replies.find((r) => r.match.test(question));
-  return (
-    hit?.text ??
-    "I can summarise bandwidth, memory or latency for any running job. Try asking “why is latency high?” or “how much memory are we using?”"
-  );
+export function timestamp(d = new Date()): string {
+  const p = (n: number, w = 2) => String(n).padStart(w, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
 }
